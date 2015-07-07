@@ -14,6 +14,8 @@ import pylab as plt
 plt.ion()
 import copy
 import exifread
+from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import label
 
 stimulusConditions = range(21)
 
@@ -140,15 +142,12 @@ class ZebraFishTools(object):
             alignedStimulus = np.concatenate((alignedStimulus,stimSequence[0:startingStim]))
         self.stimLabels = alignedStimulus[0:nframes]
         
-    def motionCorrect(self,mov=None,filename=None,index=-1):
+    def motionCorrect(self,filename=None,index=-1):
         if not filename == None:
-            m = copy.copy(self.data[self.filenames.index(filename)])
-        elif not index < 0:
-            m = copy.copy(self.data[index])
-        elif not mov == None:
-            m = copy.copy(mov)
-        else:
-            raise Exception('Must provide movie, filename, or index')
+            index = self.filenames.index(filename)
+        elif index < 0:
+            raise Exception('Must provide filename or index')
+        m = copy.copy(self.data[index])
         templates=[];
         shifts=[];
         max_shift=5;
@@ -162,6 +161,7 @@ class ZebraFishTools(object):
             #plt.show()
         m.crop(max_shift,max_shift,max_shift,max_shift)
         self.motionCorrectedMovie = m
+        self.movieCenter = self.scopePos[index]
         
     def doPCAICA(self,ncomp=50):
         initTime=time.time()
@@ -172,7 +172,7 @@ class ZebraFishTools(object):
         self.components=mdff.IPCA_stICA(components=50);
         print 'elapsed time:' + str(time.time()-initTime)
         
-    def findNeurons(self):
+    def findNeuronsFromICs(self):
         masks=self.motionCorrectedMovie.extractROIsFromPCAICA(self.components, numSTD=5, gaussiansigmax=2 , gaussiansigmay=2)
         nframes,h,w = np.shape(self.motionCorrectedMovie.mov)
         flatMovie = np.reshape(self.motionCorrectedMovie.mov,(nframes,h*w))
@@ -223,8 +223,23 @@ class ZebraFishTools(object):
                 self.neuronFs.append(tmpFTrace)
                 self.neuronDFFs.append(tmpDFFtrace)
     
+    def findNeuronsFromStDev(self,applyFilter=True,sigmax=3,sigmay=3,threshold=-999.9):
+        stdFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
+        h,w = np.shape(stdFrame)
+        for r in range(h):
+            for c in range(w):
+                stdFrame[r][c] = np.std(self.motionCorrectedMovie.mov[:,r,c])
+        if applyFilter:
+            stdFrame = gaussian_filter(stdFrame,[sigmax,sigmay])
+        if threshold < -999:
+            threshold = np.median(stdFrame) + 2*np.std(stdFrame)
+        mask = stdFrame*(stdFrame > threshold)
+        mask, n = label(mask > 0, np.ones((3,3)))
+        self.neuronMasks.append(mask)
+        print '%i potential neurons found.' % n
+        return n
+    
     def resolveOverlaps(self):
-        alteredNeurons = []
         nover = 0
         for i in range(len(self.neuronMasks)):
             sumi = np.sum(self.neuronMasks[i])
@@ -238,10 +253,8 @@ class ZebraFishTools(object):
                     nover = nover + 1
                     self.neuronMasks[i] = (self.neuronMasks[i] + self.neuronMasks[j] > 0)
                     self.neuronMasks[j] = self.neuronMasks[j] * 0
-                    if not i in alteredNeurons:
-                        alteredNeurons.append(i)
         print '%i overlaps found' % nover
-        self.recomputeNeuronVars(alteredNeurons)
+        self.computeNeuronVars()
         for i in reversed(range(len(self.neuronMasks))):
             if np.sum(self.neuronMasks[i]) == 0:
                 del self.neuronMasks[i]
@@ -250,31 +263,39 @@ class ZebraFishTools(object):
                 del self.neuronFs[i]
                 del self.neuronDFFs[i]
     
-    def recomputeNeuronVars(self,indices=[]):
+    def computeNeuronVars(self):
         nframes,h,w = np.shape(self.motionCorrectedMovie.mov)
         flatMovie = np.reshape(self.motionCorrectedMovie.mov,(nframes,h*w))
-        for i in indices:
-            tmpSize = float(np.sum(self.neuronMasks[i]))
-            flatMask = np.reshape(self.neuronMasks,(1,h*w))
-            tmpFTrace = np.dot(flatMask,np.transpose(flatMovie)) / tmpSize
-            tmpFTrace = tmpFTrace[0]
-            pixels = np.where(np.asarray(self.neuronMasks) == 1)
-            tmpCentroid = [np.sum(pixels[1])/tmpSize,np.sum(pixels[0])/tmpSize,self.movieCenter[2]]
-            tmpCentroid[0] = (tmpCentroid[0] - w/2)*0.5 + self.movieCenter[0]
-            tmpCentroid[1] = (tmpCentroid[1] - h/2)*0.5 + self.movieCenter[1]
-            tmpSize = tmpSize * 0.25
-            #finally, dF/F
-            window=int(10/self.motionCorrectedMovie.frameRate);
-            minQuantile=20;
-            traceBL=[np.percentile(tmpFTrace[k:k+window],minQuantile) for k in xrange(1,len(tmpFTrace)-window)]
-            missing=np.percentile(tmpFTrace[-window:],minQuantile);
-            missing=np.repeat(missing,window+1)
-            traceBL=np.concatenate((traceBL,missing))
-            tmpDFFtrace = (tmpFTrace-traceBL)/traceBL
-            self.neuronSizes[i] = tmpSize
-            self.neuronCentroids[i] = tmpCentroid
-            self.neuronFs[i] = tmpFTrace
-            self.neuronDFFs[i] = tmpDFFtrace
+        for mask in self.neuronMasks:
+            for i in range(1,np.max(mask)+1):
+                tmpMask = (np.asarray(mask) == i)
+                tmpSize = float(np.sum(tmpMask))
+                flatMask = np.reshape(tmpMask,(1,h*w))
+                tmpFTrace = np.dot(flatMask,np.transpose(flatMovie)) / tmpSize
+                tmpFTrace = tmpFTrace[0]
+                pixels = np.where(np.asarray(tmpMask) == 1)
+                tmpCentroid = [np.sum(pixels[1])/tmpSize,np.sum(pixels[0])/tmpSize,self.movieCenter[2]]
+                #tmpCentroid[0] = (tmpCentroid[0] - w/2)*0.5 + self.movieCenter[0]
+                #tmpCentroid[1] = (tmpCentroid[1] - h/2)*0.5 + self.movieCenter[1]
+                #tmpSize = tmpSize * 0.25
+                #finally, dF/F
+                window=int(10/self.motionCorrectedMovie.frameRate);
+                minQuantile=20;
+                traceBL=[np.percentile(tmpFTrace[k:k+window],minQuantile) for k in xrange(1,len(tmpFTrace)-window)]
+                missing=np.percentile(tmpFTrace[-window:],minQuantile);
+                missing=np.repeat(missing,window+1)
+                traceBL=np.concatenate((traceBL,missing))
+                tmpDFFtrace = (tmpFTrace-traceBL)/traceBL
+                self.neuronSizes.append(tmpSize)
+                self.neuronCentroids.append(tmpCentroid)
+                self.neuronFs.append(tmpFTrace)
+                self.neuronDFFs.append(tmpDFFtrace)
+                
+    def clearNeuronVars(self):
+        self.neuronSizes = []
+        self.neuronCentroids = []
+        self.neuronFs = []
+        self.neuronDFFs = []
             
     def analyzeData(self,filename=None,index=-1):
         if not filename == None:
@@ -295,19 +316,22 @@ class ZebraFishTools(object):
 
     
     def makeCompositeMask(self):
-        compMask = self.neuronMasks[0]
-        for i in xrange(1,len(self.neuronMasks)):
+        compMask = np.zeros(np.shape(self.neuronMasks[0]))
+        for i in xrange(len(self.neuronMasks)):
             compMask = np.add(compMask,np.multiply(i+1,self.neuronMasks[i]))
         return compMask
         
-    def plotROIsOverlay(self):
+    def plotROIsOverlay(self,vmin=-1,vmax=-1,saveAs=None,customMask=None):
         blankFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
-        compMask = self.makeCompositeMask()
+        if not customMask == None:
+            compMask = customMask
+        else:
+            compMask = self.makeCompositeMask()
         h,w = np.shape(blankFrame)
         for r in range(h):
             contourFound = False
             for c in range(w-3):
-                blankFrame[r][c] = np.std(self.motionCorrectedMovie[:][r][c])
+                blankFrame[r][c] = np.std(self.motionCorrectedMovie.mov[:,r,c])
                 if not contourFound:
                     if compMask[r][c]*compMask[r][c+1]>0:
                         contourFound = True
@@ -317,12 +341,28 @@ class ZebraFishTools(object):
                     elif compMask[r][c+2]*compMask[r][c+3]>0:
                         compMask[r][c+1] = 0
             for c in range(w-3,w):
-                blankFrame[r][c] = np.std(self.motionCorrectedMovie[:][r][c])
+                blankFrame[r][c] = np.std(self.motionCorrectedMovie.mov[:,r,c])
         
         compMask = np.ma.masked_where(compMask==0,compMask)
 
         fig, ax = plt.subplots()
-        ax.imshow(blankFrame, cmap=plt.cm.Greys_r,vmin=0,vmax=25)
+        if vmin > 0 and vmax > 0:
+            ax.imshow(blankFrame, cmap=plt.cm.Greys_r,vmin=vmin,vmax=vmax)
+        else:
+            ax.imshow(blankFrame, cmap=plt.cm.Greys_r)
         ax.imshow(compMask, interpolation='none')
         #mplt.savefig('overlay.png')
         plt.show()
+        if not saveAs == None:
+            plt.savefig(saveAs)
+        
+    def plotStDev(self,vmin=-1,vmax=-1):
+        blankFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
+        h,w = np.shape(blankFrame)
+        for r in range(h):
+            for c in range(w):
+                blankFrame[r][c] = np.std(self.motionCorrectedMovie.mov[:,r,c])
+        if vmin > 0 and vmax > 0:
+            plt.imshow(blankFrame, cmap=plt.cm.Greys_r,vmin=vmin,vmax=vmax)
+        else:
+            plt.imshow(blankFrame, cmap=plt.cm.Greys_r)
