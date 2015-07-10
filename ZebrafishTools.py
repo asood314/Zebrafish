@@ -16,40 +16,41 @@ import copy
 import exifread
 from scipy.ndimage.filters import gaussian_filter
 from scipy.ndimage import label
+from math import sqrt
 
 stimulusConditions = range(21)
 
-stimSequence = np.zeros(90)
+stimSequence = np.zeros(90,dtype=np.uint32)
 
 for i in range(8):
-    stimSequence = np.concatenate((stimSequence,(i+1)*np.ones(30)))
+    stimSequence = np.concatenate((stimSequence,2**(i+1)*np.ones(30,dtype=np.uint32)))
 
-stimSequence = np.concatenate((stimSequence,np.zeros(90)))
+stimSequence = np.concatenate((stimSequence,np.zeros(90,dtype=np.uint32)))
 
 for i in range(8):
-    stimSequence = np.concatenate((stimSequence,(i+9)*np.ones(30)))
+    stimSequence = np.concatenate((stimSequence,2**(i+9)*np.ones(30,dtype=np.uint32)))
     
-stimSequence = np.concatenate((stimSequence,np.zeros(90)))
+stimSequence = np.concatenate((stimSequence,np.zeros(90,dtype=np.uint32)))
 
-stimSequence = np.concatenate((stimSequence,17*np.ones(6)))
-stimSequence = np.concatenate((stimSequence,18*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,17*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,18*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,17*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,18*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,17*np.ones(9)))
+stimSequence = np.concatenate((stimSequence,2**17*np.ones(6,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**18*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**17*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**18*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**17*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**18*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**17*np.ones(9,dtype=np.uint32)))
 
-stimSequence = np.concatenate((stimSequence,np.zeros(90)))
+stimSequence = np.concatenate((stimSequence,np.zeros(90,dtype=np.uint32)))
 
-stimSequence = np.concatenate((stimSequence,20*np.ones(6)))
-stimSequence = np.concatenate((stimSequence,19*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,20*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,19*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,20*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,19*np.ones(15)))
-stimSequence = np.concatenate((stimSequence,20*np.ones(9)))
+stimSequence = np.concatenate((stimSequence,2**20*np.ones(6,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**19*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**20*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**19*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**20*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**19*np.ones(15,dtype=np.uint32)))
+stimSequence = np.concatenate((stimSequence,2**20*np.ones(9,dtype=np.uint32)))
 
-stimSequence = np.concatenate((stimSequence,np.zeros(90)))
+stimSequence = np.concatenate((stimSequence,np.zeros(90,dtype=np.uint32)))
 
 class ZebraFishTools(object):
 
@@ -112,11 +113,13 @@ class ZebraFishTools(object):
             channels.append(compMov.makeSubMov(frameList[ich::nchan]))
         return channels
 
-    def labelStimulusConditions(self,stimMov=None,index=-1):
-        if not index < 0:
+    def labelStimulusConditions(self,stimMov=None,filename=None,index=-1):
+        if not filename == None:
+            stimMov = self.stimData[self.filenames.index(filename)]
+        elif not index < 0:
             stimMov = self.stimData[index]
         if stimMov == None:
-            raise Exception('Must provide stimulus movie or index')
+            raise Exception('Must provide stimulus movie, filename, or index')
         totalPhotons = stimMov.mov.sum(axis=1).sum(axis=1)
         meanPhotons = totalPhotons.mean()
         runningProduct = 1
@@ -173,7 +176,7 @@ class ZebraFishTools(object):
         print 'elapsed time:' + str(time.time()-initTime)
         
     def findNeuronsFromICs(self):
-        masks=self.motionCorrectedMovie.extractROIsFromPCAICA(self.components, numSTD=5, gaussiansigmax=2 , gaussiansigmay=2)
+        masks=self.motionCorrectedMovie.extractROIsFromPCAICA(self.components, numSTD=8, gaussiansigmax=2 , gaussiansigmay=2)
         nframes,h,w = np.shape(self.motionCorrectedMovie.mov)
         flatMovie = np.reshape(self.motionCorrectedMovie.mov,(nframes,h*w))
         #calculate noise using pixels not in ROIs
@@ -193,7 +196,7 @@ class ZebraFishTools(object):
                 tmpMask = (np.asarray(masks[i]) == j+1)
                 tmpSize = float(np.sum(tmpMask))
                 #reject if too small or too large
-                if tmpSize < 10 or tmpSize > 1000:
+                if tmpSize < 30 or tmpSize > 1000:
                     continue;
                 #require range of fluorescence signal to be greater than noise
                 flatMask = np.reshape(tmpMask,(1,h*w))
@@ -205,9 +208,9 @@ class ZebraFishTools(object):
                 #keeping this ROI, calculate other quanties of interest
                 #first, ROI center and convert position/size from pixels to microns
                 pixels = np.where(np.asarray(tmpMask) == 1)
-                tmpCentroid = [np.sum(pixels[1])/tmpSize,np.sum(pixels[0])/tmpSize,self.movieCenter[2]]
-                tmpCentroid[0] = (tmpCentroid[0] - w/2)*0.5 + self.movieCenter[0]
-                tmpCentroid[1] = (tmpCentroid[1] - h/2)*0.5 + self.movieCenter[1]
+                tmpCentroid = [np.sum(pixels[1])/tmpSize,np.sum(pixels[0])/tmpSize,float(self.movieCenter[2])]
+                tmpCentroid[0] = (tmpCentroid[0] - w/2)*0.5 + float(self.movieCenter[0])
+                tmpCentroid[1] = (tmpCentroid[1] - h/2)*0.5 + float(self.movieCenter[1])
                 tmpSize = tmpSize * 0.25
                 #finally, dF/F
                 window=int(10/self.motionCorrectedMovie.frameRate)
@@ -223,7 +226,7 @@ class ZebraFishTools(object):
                 self.neuronFs.append(tmpFTrace)
                 self.neuronDFFs.append(tmpDFFtrace)
     
-    def findNeuronsFromStDev(self,applyFilter=True,sigmax=3,sigmay=3,threshold=-999.9):
+    def findNeuronsFromStDev(self,applyFilter=True,sigmax=3,sigmay=3,tRange=None,sizeLimit=40,distanceLimit=4.5):
         stdFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
         h,w = np.shape(stdFrame)
         for r in range(h):
@@ -231,13 +234,48 @@ class ZebraFishTools(object):
                 stdFrame[r][c] = np.std(self.motionCorrectedMovie.mov[:,r,c])
         if applyFilter:
             stdFrame = gaussian_filter(stdFrame,[sigmax,sigmay])
-        if threshold < -999:
-            threshold = np.median(stdFrame) + 2*np.std(stdFrame)
-        mask = stdFrame*(stdFrame > threshold)
-        mask, n = label(mask > 0, np.ones((3,3)))
-        self.neuronMasks.append(mask)
-        print '%i potential neurons found.' % n
-        return n
+        if tRange == None:
+            med = np.median(stdFrame)
+            stdStd = np.std(stdFrame)
+            tRange = [med + 5*stdStd, med + 4*stdStd, med + 3*stdStd, med + 2*stdStd, med + stdStd, med]
+        conmat = np.ones((3,3)) #np.array([[0,1,0],[1,1,1],[0,1,0]])
+        ntot = 0
+        for threshold in tRange:
+            stdFrameFree = stdFrame
+            for m in self.neuronMasks:
+                stdFrameFree = stdFrameFree * (1-(m>0))
+            mask = stdFrameFree*(stdFrameFree > threshold)
+            mask, n = label(mask > 0, conmat)
+            nRejected = 0
+            nPruned = 0
+            avgPixelsPruned = 0
+            for i in range(1,n+1):
+                iROI = (mask == i)
+                iSize = np.sum(iROI)
+                stdROI = iROI * stdFrameFree
+                [[rmax],[cmax]] = np.where(stdROI == np.max(stdROI))
+                r,c = np.where(iROI == 1)
+                for j in range(len(r)):
+                    if ((r[j]-rmax)**2 + (c[j]-cmax)**2)**0.5 < distanceLimit:
+                        iROI[r[j],c[j]] = 0
+                mask = mask * (1-iROI)
+                diff = np.sum(iROI)
+                iSizePruned = iSize - diff
+                if iSizePruned < sizeLimit:
+                    iROI = (mask == i)
+                    mask = mask * (1-iROI)
+                    nRejected = nRejected + 1
+                elif diff > 0:
+                    nPruned = nPruned + 1
+                    avgPixelsPruned = avgPixelsPruned + diff
+            avgPixelsPruned = avgPixelsPruned / float(nPruned)
+            mask, nfinal = label(mask > 0, conmat)
+            self.neuronMasks.append(mask)
+            print '%i potential neurons found above threshold %f' % (n,threshold)
+            print '%i rejected after pruning for having size < %i' % (nRejected,sizeLimit)
+            print '%i kept neurons pruned, average %i pixels removed' % (nPruned,avgPixelsPruned)
+            ntot = ntot + n - nRejected
+        return ntot
     
     def resolveOverlaps(self):
         nover = 0
@@ -318,13 +356,14 @@ class ZebraFishTools(object):
     def makeCompositeMask(self):
         compMask = np.zeros(np.shape(self.neuronMasks[0]))
         for i in xrange(len(self.neuronMasks)):
-            compMask = np.add(compMask,np.multiply(i+1,self.neuronMasks[i]))
+            addMask = (self.neuronMasks[i] + np.max(compMask)) * (self.neuronMasks[i] > 0)
+            compMask = np.add(compMask,addMask)
         return compMask
         
     def plotROIsOverlay(self,vmin=-1,vmax=-1,saveAs=None,customMask=None):
         blankFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
         if not customMask == None:
-            compMask = customMask
+            compMask = copy.copy(customMask)
         else:
             compMask = self.makeCompositeMask()
         h,w = np.shape(blankFrame)
@@ -366,3 +405,18 @@ class ZebraFishTools(object):
             plt.imshow(blankFrame, cmap=plt.cm.Greys_r,vmin=vmin,vmax=vmax)
         else:
             plt.imshow(blankFrame, cmap=plt.cm.Greys_r)
+    
+    def showNeuronCorrelations(self):
+        l = len(self.neuronDFFs)
+        corrMat = np.zeros((l,l))
+        for i in range(l):
+            for j in range(l):
+                mx = np.mean(self.neuronDFFs[i])
+                my = np.mean(self.neuronDFFs[j])
+                cov = np.sum((self.neuronDFFs[i] - mx)*(self.neuronDFFs[j] - my))
+                corr = cov/(sqrt(np.sum((self.neuronDFFs[i] - mx)**2))*sqrt(np.sum((self.neuronDFFs[j] - my)**2)))
+                corrMat[i,j] = corr
+        plt.imshow(corrMat,interpolation='none')
+        plt.jet()
+        plt.colorbar()
+        plt.show()
