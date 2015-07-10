@@ -226,7 +226,7 @@ class ZebraFishTools(object):
                 self.neuronFs.append(tmpFTrace)
                 self.neuronDFFs.append(tmpDFFtrace)
     
-    def findNeuronsFromStDev(self,applyFilter=True,sigmax=3,sigmay=3,tRange=None,sizeLimit=40,distanceLimit=4.5):
+    def findNeuronsFromStDev(self,applyFilter=False,sigmax=3,sigmay=3,tRange=None,sizeLimit=40,distanceLimit=6):
         stdFrame = np.zeros(np.shape(self.motionCorrectedMovie.mov[0]))
         h,w = np.shape(stdFrame)
         for r in range(h):
